@@ -2,14 +2,63 @@
 
 import { useState } from "react";
 
+type ScanLocation = {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+};
+
+type ScanData = {
+  raw: string;
+  url?: string | null;
+  text?: string | null;
+  timestamp: string;
+  location?: ScanLocation | null;
+  device: {
+    userAgent: string;
+    platform?: string;
+    language?: string;
+    vendor?: string;
+  };
+};
+
 export default function HomePage() {
   const [reading, setReading] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scanData, setScanData] = useState<ScanData | null>(null);
+  const [gettingLocation, setGettingLocation] = useState(false);
+
+  const getLocation = (): Promise<ScanLocation | null> => {
+    if (typeof window === "undefined") return Promise.resolve(null);
+    if (!("geolocation" in navigator)) return Promise.resolve(null);
+
+    setGettingLocation(true);
+
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setGettingLocation(false);
+          resolve({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          });
+        },
+        () => {
+          setGettingLocation(false);
+          resolve(null);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,
+        }
+      );
+    });
+  };
 
   const startNfc = async () => {
     setError(null);
-    setMessage(null);
+    setScanData(null);
 
     if (typeof window === "undefined") return;
 
@@ -26,19 +75,46 @@ export default function HomePage() {
       await ndef.scan();
       setReading(true);
 
-      ndef.onreading = (event: any) => {
+      ndef.onreading = async (event: any) => {
         const decoder = new TextDecoder();
-        let text = "";
+
+        let raw = "";
+        let url: string | null = null;
+        let text: string | null = null;
 
         for (const record of event.message.records) {
-          if (record.recordType === "text" || record.recordType === "url") {
-            text += decoder.decode(record.data);
-          } else {
-            text += `[Tipo: ${record.recordType}] `;
+          const value = decoder.decode(record.data);
+          raw += value + " ";
+
+          if (record.recordType === "url") {
+            url = value;
+          } else if (record.recordType === "text") {
+            text = value;
           }
         }
 
-        setMessage(text || "Se leyó la tarjeta pero no se encontró texto.");
+        const timestamp = new Date().toISOString();
+
+        const deviceInfo = {
+          userAgent: navigator.userAgent,
+          // @ts-ignore
+          platform: navigator.platform,
+          language: navigator.language,
+          // @ts-ignore
+          vendor: navigator.vendor,
+        };
+
+        const location = await getLocation();
+
+        setScanData({
+          raw: raw.trim(),
+          url,
+          text,
+          timestamp,
+          location,
+          device: deviceInfo,
+        });
+
         setReading(false);
       };
 
@@ -50,6 +126,14 @@ export default function HomePage() {
       console.error(err);
       setError(err?.message || "No se pudo iniciar el escaneo NFC.");
       setReading(false);
+    }
+  };
+
+  const formatDate = (iso: string) => {
+    try {
+      return new Date(iso).toLocaleString();
+    } catch {
+      return iso;
     }
   };
 
@@ -80,10 +164,13 @@ export default function HomePage() {
         }}
       >
         <h1 style={{ fontSize: "1.5rem", marginBottom: "0.75rem" }}>
-          Escanear precio (NFC)
+          Escanear NFC (capturar datos)
         </h1>
-        <p style={{ fontSize: "0.9rem", marginBottom: "1rem", color: "#555" }}>
-          Pulsa el botón y acerca la tarjeta NFC al celular.
+        <p style={{ fontSize: "0.9rem", marginBottom: "0.5rem", color: "#555" }}>
+          Esta página no abrirá la URL. Solo leerá la tarjeta y mostrará los datos.
+        </p>
+        <p style={{ fontSize: "0.8rem", marginBottom: "1rem", color: "#777" }}>
+          Ten esta página abierta en primer plano y acerca la tarjeta al celular.
         </p>
 
         <button
@@ -133,15 +220,81 @@ export default function HomePage() {
           Datos leídos
         </h2>
 
-        {message ? (
-          <p
+        {scanData ? (
+          <div
             style={{
-              fontSize: "1rem",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.5rem",
+              fontSize: "0.9rem",
               wordBreak: "break-word",
             }}
           >
-            {message}
-          </p>
+            {scanData.url && (
+              <p>
+                <strong>URL guardada:</strong> {scanData.url}
+              </p>
+            )}
+
+            {scanData.text && (
+              <p>
+                <strong>Texto:</strong> {scanData.text}
+              </p>
+            )}
+
+            <p>
+              <strong>Contenido bruto:</strong>{" "}
+              {scanData.raw || "—"}
+            </p>
+
+            <p>
+              <strong>Fecha y hora:</strong>{" "}
+              {formatDate(scanData.timestamp)}
+            </p>
+
+            <p>
+              <strong>Dispositivo (user agent):</strong>
+              <br />
+              {scanData.device.userAgent}
+            </p>
+
+            <p>
+              <strong>Plataforma:</strong>{" "}
+              {scanData.device.platform || "No disponible"}
+            </p>
+
+            <p>
+              <strong>Idioma del navegador:</strong>{" "}
+              {scanData.device.language || "No disponible"}
+            </p>
+
+            <p>
+              <strong>Vendor:</strong>{" "}
+              {scanData.device.vendor || "No disponible"}
+            </p>
+
+            {gettingLocation && (
+              <p style={{ color: "#555" }}>
+                Obteniendo ubicación…
+              </p>
+            )}
+
+            {scanData.location ? (
+              <p>
+                <strong>Ubicación:</strong>{" "}
+                {scanData.location.latitude.toFixed(6)},{" "}
+                {scanData.location.longitude.toFixed(6)}{" "}
+                {scanData.location.accuracy &&
+                  `(±${scanData.location.accuracy.toFixed(0)}m)`}
+              </p>
+            ) : (
+              <p>
+                <strong>Ubicación:</strong> No disponible (el
+                usuario no dio permiso o el dispositivo no la
+                proporcionó).
+              </p>
+            )}
+          </div>
         ) : (
           <p
             style={{
